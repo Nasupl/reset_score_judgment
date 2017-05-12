@@ -184,6 +184,7 @@ void JudgmentNode::modelStateReceived(const gazebo_msgs::ModelStates &msg){
     data.data = pow(pow(model_point.x - estimate_point.x, 2) + pow(model_point.y - estimate_point.y,2 ), 0.5);
     estimate_score_pub_.publish(data);
   }
+  ros::Duration(0.1).sleep();
 }
 
 bool JudgmentNode::getEstimationPose(geometry_msgs::Point *point){
@@ -229,103 +230,12 @@ bool JudgmentNode::getDiffEstAndGazebo(double *l){
 }
 
 void JudgmentNode::laserReceived(const sensor_msgs::LaserScanConstPtr &msg){
-    ROS_INFO_STREAM("received laser");
-    if(map_cloud_.points.size() == 0){
-        ROS_WARN("map cloud is empty");
-        return;
+    double real_l;
+    std_msgs::Float64 data;
+    if(getDiffEstAndGazebo(&real_l)){
+      data.data = real_l;
+      estimate_score_pub_.publish(data);
     }
-
-    map_cloud_.header.stamp = ros::Time(0).toNSec()/1e3;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_map_cloud(new pcl::PointCloud<pcl::PointXYZ>());
-    try{
-        pcl_ros::transformPointCloud("/base_link", map_cloud_, *transformed_map_cloud, *tf_listener_);
-    }
-    catch (tf::TransformException e){
-        ROS_ERROR("ERROR: %s",e.what());
-    }
-
-    pcl::PassThrough<pcl::PointXYZ> pass_x;
-    pass_x.setInputCloud(transformed_map_cloud);
-    pass_x.setFilterLimitsNegative(false);
-    pass_x.setFilterFieldName(std::string("x"));
-    pass_x.setFilterLimits(0, 30);
-    pass_x.filter(*transformed_map_cloud);
-    pcl::PassThrough<pcl::PointXYZ> pass_y;
-    pass_y.setInputCloud(transformed_map_cloud);
-    pass_y.setFilterLimitsNegative(false);
-    pass_y.setFilterFieldName(std::string("y"));
-    pass_y.setFilterLimits(-30, 30);
-    pass_y.filter(*transformed_map_cloud);
-
-    pcl::PointCloud<pcl::PointXYZ>::Ptr passthroughed_map_cloud(new pcl::PointCloud<pcl::PointXYZ>());
-
-    try{
-        pcl_ros::transformPointCloud("/map", *transformed_map_cloud, *passthroughed_map_cloud, *tf_listener_);
-    }
-    catch (tf::TransformException e){
-        ROS_ERROR("ERROR: %s",e.what());
-    }
-
-    sensor_msgs::PointCloud2 scan_cloud;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_scan_cloud(new pcl::PointCloud<pcl::PointXYZ>());
-
-    try{
-        tf_listener_->waitForTransform(msg->header.frame_id, "/map", ros::Time(0),ros::Duration(1.0));
-    }
-    catch (tf::TransformException e){
-        ROS_ERROR("ERROR: %s",e.what());
-        return;
-    }
-
-    try{
-        projector_.transformLaserScanToPointCloud("/map", *msg, scan_cloud, *tf_listener_);
-    }
-    catch (tf::TransformException e){
-        ROS_ERROR("ERROR: %s",e.what());
-        return;
-    }
-    pcl::fromROSMsg(scan_cloud, *pcl_scan_cloud);
-
-    pcl::console::TicToc tt;
-    tt.tic();
-    pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-    icp.setInputSource(pcl_scan_cloud);
-    icp.setInputTarget(passthroughed_map_cloud);
-    icp.setMaxCorrespondenceDistance (5);
-    icp.setMaximumIterations (10000);
-    icp.setTransformationEpsilon (1e-12);
-    icp.setEuclideanFitnessEpsilon (0.01);
-    pcl::PointCloud<pcl::PointXYZ> Final;
-    sensor_msgs::PointCloud2 ros_Final;
-    icp.align(Final);
-    if(icp.hasConverged()){
-      double score = icp.getFitnessScore();
-      // std::cout << "has converged:" << icp.hasConverged() << " score: " << icp.getFitnessScore() << ", time: "<< tt.toc() << "ms, " << Final.points.size() << std::endl;
-      // std::cout << "has converged," << icp.getFitnessScore() << "," <<
-      // std::cout << "x:" <<  icp.getFicp.getFitnessScore()
-      Eigen::Matrix4f transformation = icp.getFinalTransformation ();
-      double l =  pow(transformation(0,3)*transformation(0,3) + transformation(1,3)*transformation(1,3) + transformation(2,3)*transformation(2,3), 0.5) ;
-      // std::cout << "x:" << transformation(0,3) << "y:" << transformation(1,3) << "z:" << transformation(2,3) << "l:" << l <<  std::endl;
-      // std::cout << "x:" << l / score << std::endl;
-
-
-      double real_l;
-      if(getDiffEstAndGazebo(&real_l)){
-        std::cout << "has converged," << icp.getFitnessScore() << "," << l << "," << real_l << std::endl;
-      }
-      else{
-        // ROS_ERROR("Can't call");
-      }
-    }
-
-    ROS_INFO_STREAM("transformed cloud publish");
-    pcl::toROSMsg(*passthroughed_map_cloud, ros_map_cloud_);
-    map_cloud_pub_.publish(ros_map_cloud_);
-
-    pcl::toROSMsg(Final, ros_Final);
-    ros_Final.header = ros_map_cloud_.header;
-    icp_cloud_pub_.publish(ros_Final);
-
     ros::Duration(0.1).sleep();
 }
 
