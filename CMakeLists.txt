@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(reset_score_judgment)
 
+set(CMAKE_CXX_FLAGS "-O3")
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
@@ -18,6 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_srvs
   tf
 )
+find_package(Eigen REQUIRED)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -123,7 +125,8 @@ catkin_package(
 ## Your package locations should be listed before other locations
 # include_directories(include)
 include_directories(
-  ${catkin_INCLUDE_DIRS}
+  ${catkin_INCLUDE_DIRS} include
+  ${Eigen_INCLUDE_DIRS}
 )
 
 ## Declare a C++ library

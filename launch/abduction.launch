@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+
+<launch>
+  <!-- <node name="gazebo_abduction" pkg="reset_score_judgment" type="gazebo_abduction.py" launch-prefix="xterm -e python -m pdb"> -->
+  <node name="gazebo_abduction" pkg="reset_score_judgment" type="gazebo_abduction.py">
+    <rosparam file="$(find reset_score_judgment)/abduction_cfg/abduction.yaml" command="load" />
+  </node>
+</launch>

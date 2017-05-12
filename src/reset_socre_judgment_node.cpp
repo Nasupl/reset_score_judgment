@@ -5,7 +5,11 @@
 #include <nav_msgs/OccupancyGrid.h>
 #include <nav_msgs/GetMap.h>
 #include <std_msgs/Header.h>
+#include <std_msgs/Float64.h>
+#include <geometry_msgs/Point.h>
 #include <laser_geometry/laser_geometry.h>
+#include <gazebo_msgs/ModelStates.h>
+#include <gazebo_msgs/GetModelState.h>
 
 #include <tf/transform_listener.h>
 
@@ -15,6 +19,12 @@
 #include <pcl/registration/icp.h>
 #include <pcl_ros/point_cloud.h>
 #include <pcl_ros/transforms.h>
+#include <pcl/console/time.h>
+
+#include <Eigen/Core>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include <Eigen/LU>
 
 class JudgmentNode
 {
@@ -24,13 +34,18 @@ public:
 private:
     void mapReceived(const nav_msgs::OccupancyGridConstPtr &msg);
     void laserReceived(const sensor_msgs::LaserScanConstPtr &msg);
+    void modelStateReceived(const gazebo_msgs::ModelStates &msg);
 
     void handleMapMessage(const nav_msgs::OccupancyGrid &msg);
 
     void requestMap();
+    bool getEstimationPose(geometry_msgs::Point *point);
+    bool getDiffEstAndGazebo(double *l);
 
     bool first_map_only_;
     bool first_map_received_;
+
+    std::string gazebo_model_name_;
 
     pcl::PointCloud<pcl::PointXYZ> map_cloud_;
     sensor_msgs::PointCloud2 ros_map_cloud_;
@@ -38,21 +53,35 @@ private:
     tf::TransformListener *tf_listener_;
     laser_geometry::LaserProjection projector_;
 
+    // gazebo_msgs::GetModelState get_model_state_;
+
     ros::Subscriber laser_sub_;
     ros::Subscriber map_sub_;
+    ros::Subscriber model_states_sub_;
     ros::Publisher map_cloud_pub_;
+    ros::Publisher icp_cloud_pub_;
+    ros::Publisher estimate_score_pub_;
+    // ros::Publisher test_;
 };
 
 JudgmentNode::JudgmentNode(ros::NodeHandle nh)
 {
     first_map_only_ = false;
     first_map_received_ = false;
-    tf_listener_ = new tf::TransformListener();
+    gazebo_model_name_ = "icart_mini";
+
+    tf_listener_ = new tf::TransformListener(ros::Duration(100.0), true);
 
     map_sub_ = nh.subscribe("map", 1, &JudgmentNode::mapReceived, this);
     laser_sub_ = nh.subscribe("scan", 10, &JudgmentNode::laserReceived, this);
+    model_states_sub_ = nh.subscribe("/gazebo/model_states", 10, &JudgmentNode::modelStateReceived, this);
 
     map_cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>("map_cloud", 1, true);
+    icp_cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>("icp_cloud",1,true);
+    estimate_score_pub_ = nh.advertise<std_msgs::Float64>("estimate_score", 1, true);
+    // test_ = nh.advertise<std_msgs::Float64>("test", 1, true);
+
+    // ros::ServiceClient model_state_client_ = nh.serviceClient<gazebo_msgs::GetModelState>("get_model_state");
 
     ros::spin();
 }
@@ -136,6 +165,69 @@ void JudgmentNode::handleMapMessage(const nav_msgs::OccupancyGrid& msg){
     // pcl::io::savePCDFileASCII(str, map_cloud);
 }
 
+void JudgmentNode::modelStateReceived(const gazebo_msgs::ModelStates &msg){
+  int model_index = '\0';
+  std_msgs::Float64 data;
+
+  for(int i=0; i<msg.name.size(); i++){
+    if(msg.name[i] == gazebo_model_name_){
+      model_index = i;
+      break;
+    }
+  }
+  if(model_index == '\0'){
+    return;
+  }
+  geometry_msgs::Point model_point = msg.pose[model_index].position;
+  geometry_msgs::Point estimate_point;
+  if(getEstimationPose(&estimate_point)){
+    data.data = pow(pow(model_point.x - estimate_point.x, 2) + pow(model_point.y - estimate_point.y,2 ), 0.5);
+    estimate_score_pub_.publish(data);
+  }
+}
+
+bool JudgmentNode::getEstimationPose(geometry_msgs::Point *point){
+  double ex, ey;
+
+  try
+  {
+    tf::StampedTransform trans;
+    tf_listener_->waitForTransform("map", "base_link", ros::Time(0), ros::Duration(0.5));
+    tf_listener_->lookupTransform("map", "base_link", ros::Time(0), trans);
+    ex = trans.getOrigin().x();
+    ey = trans.getOrigin().y();
+  }
+  catch(tf::TransformException &e)
+  {
+    ROS_WARN("%s", e.what());
+    return false;
+  }
+
+  point->x = ex;
+  point->y = ey;
+
+  return true;
+}
+
+bool JudgmentNode::getDiffEstAndGazebo(double *l){
+  double gx, gy;
+  geometry_msgs::Point point;
+  if(!getEstimationPose(&point)){
+    return false;
+  }
+  gazebo_msgs::GetModelState::Request req;
+  gazebo_msgs::GetModelState::Response resp;
+  req.model_name = "icart_mini";
+  if(!ros::service::call("/gazebo/get_model_state", req, resp)){
+    return false;
+  }
+  gx = resp.pose.position.x;
+  gy = resp.pose.position.y;
+
+  *l = pow( pow(point.x-gx,2) + pow(point.y-gy,2), 0.5);
+  return true;
+}
+
 void JudgmentNode::laserReceived(const sensor_msgs::LaserScanConstPtr &msg){
     ROS_INFO_STREAM("received laser");
     if(map_cloud_.points.size() == 0){
@@ -193,21 +285,48 @@ void JudgmentNode::laserReceived(const sensor_msgs::LaserScanConstPtr &msg){
         return;
     }
     pcl::fromROSMsg(scan_cloud, *pcl_scan_cloud);
+
+    pcl::console::TicToc tt;
+    tt.tic();
     pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-    icp.setInputSource(passthroughed_map_cloud);
-    icp.setInputTarget(pcl_scan_cloud);
+    icp.setInputSource(pcl_scan_cloud);
+    icp.setInputTarget(passthroughed_map_cloud);
+    icp.setMaxCorrespondenceDistance (5);
+    icp.setMaximumIterations (10000);
+    icp.setTransformationEpsilon (1e-12);
+    icp.setEuclideanFitnessEpsilon (0.01);
     pcl::PointCloud<pcl::PointXYZ> Final;
+    sensor_msgs::PointCloud2 ros_Final;
     icp.align(Final);
-    std::cout << "has converged:" << icp.hasConverged() << " score: " <<
-    icp.getFitnessScore() << std::endl;
-    std::cout << icp.getFinalTransformation() << std::endl;
+    if(icp.hasConverged()){
+      double score = icp.getFitnessScore();
+      // std::cout << "has converged:" << icp.hasConverged() << " score: " << icp.getFitnessScore() << ", time: "<< tt.toc() << "ms, " << Final.points.size() << std::endl;
+      // std::cout << "has converged," << icp.getFitnessScore() << "," <<
+      // std::cout << "x:" <<  icp.getFicp.getFitnessScore()
+      Eigen::Matrix4f transformation = icp.getFinalTransformation ();
+      double l =  pow(transformation(0,3)*transformation(0,3) + transformation(1,3)*transformation(1,3) + transformation(2,3)*transformation(2,3), 0.5) ;
+      // std::cout << "x:" << transformation(0,3) << "y:" << transformation(1,3) << "z:" << transformation(2,3) << "l:" << l <<  std::endl;
+      // std::cout << "x:" << l / score << std::endl;
+
+
+      double real_l;
+      if(getDiffEstAndGazebo(&real_l)){
+        std::cout << "has converged," << icp.getFitnessScore() << "," << l << "," << real_l << std::endl;
+      }
+      else{
+        // ROS_ERROR("Can't call");
+      }
+    }
 
     ROS_INFO_STREAM("transformed cloud publish");
     pcl::toROSMsg(*passthroughed_map_cloud, ros_map_cloud_);
     map_cloud_pub_.publish(ros_map_cloud_);
 
-    ros::Duration(0.1).sleep();
+    pcl::toROSMsg(Final, ros_Final);
+    ros_Final.header = ros_map_cloud_.header;
+    icp_cloud_pub_.publish(ros_Final);
 
+    ros::Duration(0.1).sleep();
 }
 
 int main(int argc, char **argv) {

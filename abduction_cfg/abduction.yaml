@@ -1,0 +1,20 @@
+abduction_pose:
+  position:
+    x: -9.50222579415
+    y: 8.42839400054
+    z: -0.00354148339071
+  orientation:
+    x: 0
+    y: 0
+    z: 0
+    w: 1
+target_pose:
+  position:
+    x: -6.5
+    y: 8.42839400054
+    z: -0.00354148339071
+  orientation:
+    x: 0
+    y: 0
+    z: 0
+    w: 1
